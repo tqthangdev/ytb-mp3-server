@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(git:*)",
+      "Shell(rmdir:*)",
+      "Shell(python --version)",
+      "Shell(where:*)",
+      "Shell(python -m venv .venv)",
+      "Shell(if:*)",
+      "Shell(else:*)",
+      "Shell(.venvScriptspython.exe:*)",
+      "Shell(tee:*)",
+      "Shell(curl -s http://127.0.0.1:9999/health)",
+      "Shell(.venv\\Scripts\\python.exe -u main.py > server.log 2>&1)",
+      "Shell(tasklist:*)",
+      "Shell(findstr:*)",
+      "Shell(netstat:*)",
+      "Shell(.venv\\Scripts\\python.exe -u -c \"print('redirect test')\" > redirect_test.log 2>&1 && type redirect_test.log)",
+      "Shell(del server.log 2>nul & .venv\\Scripts\\python.exe -u main.py > server.log 2>&1)",
+      "powershell",
+      "Shell(curl -s -o /dev/null -w \"%{http_code} %{size_download}\" \"http://127.0.0.1:9999/health\")",
+      "Shell(del server.log server_err.log redirect_test.log 2>nul & del %TEMP%\\ytdlp_out_*.json %TEMP%\\ytdlp_err_*.log %TEMP%\\ffmpeg_err_*.log 2>nul & echo CLEANED)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}
