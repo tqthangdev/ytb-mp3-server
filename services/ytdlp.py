@@ -31,7 +31,12 @@ async def get_info(url):
         stdout=open(stdout_file, "w"),
         stderr=open(stderr_file, "w"),
     )
-    await proc.wait()
+    try:
+        await proc.wait()
+    except asyncio.CancelledError:
+        proc.terminate()
+        await proc.wait()
+        raise
 
     stderr = stderr_file.read_text(errors="replace") if stderr_file.exists() else ""
     stderr_file.unlink(missing_ok=True)
@@ -77,7 +82,12 @@ async def download_audio(url, output, on_progress):
                 if inspect.isawaitable(result):
                     await result
 
-    await asyncio.gather(_read_stderr(), proc.wait())
+    try:
+        await asyncio.gather(_read_stderr(), proc.wait())
+    except asyncio.CancelledError:
+        proc.terminate()
+        await proc.wait()
+        raise
 
     if proc.returncode != 0:
         raise RuntimeError(f"yt-dlp exited with code {proc.returncode}")

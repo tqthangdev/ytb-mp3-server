@@ -34,6 +34,8 @@ async def ready_file_cleanup_loop():
     while True:
         await asyncio.sleep(READY_FILE_CLEANUP_INTERVAL_S)
         cleanup_expired_files()
+        if queue:
+            queue.cleanup_expired_jobs()
 
 
 # Setup callback khi job status thay đổi (optional, để debug)

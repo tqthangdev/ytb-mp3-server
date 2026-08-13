@@ -1,3 +1,4 @@
+import asyncio
 import secrets
 import time
 
@@ -97,6 +98,16 @@ def create_download_router(sio):
                 queue.mark_done(job_id, f"/file/{job_id}", display_title)
                 await send_status("ready", 95, fileUrl=f"/file/{job_id}", title=display_title)
 
+            except asyncio.CancelledError:
+                print(f"[{job_id}] Download cancelled")
+                await send_status("cancelled", 0)
+
+                if tmp_m4a:
+                    remove(tmp_m4a)
+                if tmp_mp3:
+                    remove(tmp_mp3)
+
+                raise  # để queue đánh dấu cancelled
             except Exception as err:
                 print(f"[{job_id}] Download error: {err}")
                 await send_status("error", 0, errorMessage=str(err))
@@ -112,7 +123,7 @@ def create_download_router(sio):
 
         try:
             queue = get_queue()
-            result = queue.add_job(job_id, convert_worker)
+            result = queue.add_job(job_id, convert_worker, url=url)
 
             if result["queued"]:
                 await send_status("queued", 0, position=result["position"])
@@ -140,6 +151,27 @@ def create_download_router(sio):
             raise HTTPException(status_code=404, detail="Job not found or expired")
 
         return job
+
+    @router.post("/download/cancel")
+    async def cancel_download(job_id: str = Query(default=None), url: str = Query(default=None), all: bool = Query(default=False)):
+        queue = get_queue()
+
+        if all:
+            canceled = queue.cancel_all()
+            return {"canceled": canceled}
+
+        if url:
+            # Cancel job theo URL (app chỉ biết url, chưa biết jobId)
+            job_id = queue.find_job_id_by_url(url)
+
+        if not job_id:
+            raise HTTPException(status_code=400, detail="Missing jobId or url or all=true")
+
+        ok = queue.cancel_job(job_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Job not found, already finished, or already cancelled")
+
+        return {"canceled": 1, "jobId": job_id}
 
     @router.get("/file/{job_id}")
     async def get_file(job_id: str):

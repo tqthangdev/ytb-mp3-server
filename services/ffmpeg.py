@@ -21,7 +21,12 @@ async def convert_to_mp3(input_path, output_path):
         stdout=asyncio.subprocess.DEVNULL,
         stderr=open(stderr_file, "w"),
     )
-    await proc.wait()
+    try:
+        await proc.wait()
+    except asyncio.CancelledError:
+        proc.terminate()
+        await proc.wait()
+        raise
 
     stderr = stderr_file.read_text(errors="replace") if stderr_file.exists() else ""
     stderr_file.unlink(missing_ok=True)
