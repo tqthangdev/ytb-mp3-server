@@ -1,39 +1,38 @@
 # ytb-mp3-server
 
-Server chuyển đổi video YouTube sang MP3, viết bằng **Python (FastAPI + python-socketio)**. Nhận yêu cầu từ client (app React Native / web), tải audio qua `yt-dlp`, convert sang MP3 bằng `ffmpeg`, báo tiến độ realtime qua Socket.IO, rồi phục vụ file cho client tải về.
+YouTube-to-MP3 conversion server built with **Python (FastAPI + python-socketio)**. It accepts download requests from clients (React Native app / web), pulls the audio with `yt-dlp`, converts it to MP3 with `ffmpeg`, streams real-time progress over Socket.IO, and serves the resulting file for the client to download.
 
-> Phiên bản trước đây viết bằng Node.js (Express + socket.io); đã chuyển toàn bộ sang Python. API contract giữ nguyên nên client cũ vẫn hoạt động.
-
-## Kiến trúc
+## Architecture
 
 ```
 ytb-mp3-server/
 ├── main.py                  # Entry point: FastAPI app + Socket.IO server + queue init + graceful shutdown
 ├── routes/
-│   └── download.py          # GET /download (queue job), GET /file/:jobId (tải file mp3)
+│   └── download.py          # GET /download (queue job), GET /download/status, GET /file/:jobId (serve mp3)
 ├── services/
-│   ├── job_queue.py         # Hàng đợi job (tối đa N job chạy cùng lúc, giới hạn tổng job)
-│   ├── ytdlp.py             # Gọi yt-dlp: lấy metadata + download audio (subprocess)
+│   ├── job_queue.py         # Job queue (bounded concurrency + total job limit) + per-job status tracking
+│   ├── server_config.py     # Loads queue limits from remote config (GitHub Pages), fallback to defaults
+│   ├── ytdlp.py             # Wraps yt-dlp: fetch metadata + download audio (subprocess)
 │   ├── ffmpeg.py            # Convert m4a → mp3 (subprocess)
-│   └── file_service.py      # Tiện ích file: sanitize tên, temp file, xoá, kích thước
+│   └── file_service.py      # File utilities: sanitize names, temp files, delete, size
 ├── utils/
-│   └── url_util.py          # Chuẩn hoá URL YouTube (youtu.be/... → watch?v=...)
+│   └── url_util.py          # Normalizes YouTube URLs (youtu.be/... → watch?v=...)
 ├── requirements.txt
 ├── Dockerfile
-└── cookies.txt              # (tuỳ chọn) cookie YouTube — KHÔNG push lên git
+└── cookies.txt              # (optional) YouTube cookies — NEVER commit to git
 ```
 
-## Yêu cầu
+## Requirements
 
 - Python 3.11+
-- `yt-dlp` binary (`yt-dlp.exe` trên Windows đặt cạnh thư mục dự án, hoặc `yt-dlp` trong PATH trên Linux)
-- `ffmpeg` trong PATH
-- (Tuỳ chọn) `deno` — chỉ cần khi deploy Docker, dùng cho YouTube n-challenge solving
+- `yt-dlp` binary (`yt-dlp.exe` next to the project dir on Windows, or `yt-dlp` in PATH on Linux)
+- `ffmpeg` in PATH
+- (Optional) `deno` — only needed for Docker deployments, used for YouTube n-challenge solving
 
-## Cài đặt & chạy
+## Install & run
 
 ```bash
-# 1. Tạo virtualenv và cài dependencies
+# 1. Create a virtualenv and install dependencies
 python -m venv .venv
 # Windows:
 .venv\Scripts\activate
@@ -42,48 +41,75 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 
-# 2. Chạy server (mặc định port 9999, đổi qua env PORT nếu cần)
+# 2. Start the server (default port 9999, override with the PORT env var)
 python main.py
 ```
 
-Kiểm tra server sống:
+Check the server is alive:
 
 ```bash
 curl http://localhost:9999/health
 # → {"status":"ok","queue":{"running":0,"waiting":0,"max_concurrent":1,"max_queue_length":20},"timestamp":"..."}
 ```
 
+## Configuration
+
+Queue limits are loaded from a remote config file (GitHub Pages) at startup — the same config source the app reads:
+
+```json
+{
+  "serverUrl": "https://ytb-mp3-server.onrender.com",
+  "maxConcurrent": 1,
+  "maxQueueLength": 20
+}
+```
+
+- If the remote config is unreachable or the values are missing/invalid, the server falls back to `maxConcurrent = 1` and `maxQueueLength = 20` and keeps running.
+- Changing the remote config takes effect on the next deploy/restart — no code change needed.
+
 ## API
 
 ### `GET /health`
 
-Trạng thái server + thông tin queue.
+Server status + queue info.
 
 ### `GET /download?socketId=<socket_id>&url=<youtube_url>`
 
-Ghi danh một job vào hàng đợi. **Trả về ngay lập tức** (không chờ tải xong):
+Registers a job in the queue. **Returns immediately** (does not wait for conversion):
 
 ```json
 { "jobId": "abc123_1786358433701_bb5469", "queued": false, "position": 0 }
 ```
 
-- `socketId` (tuỳ chọn): id socket của client — server emit event `progress_update` về đúng client này. Bỏ qua nếu client không dùng socket.
-- `queued: true` + `position` khi hàng đợi đang đầy (job xếp hàng chờ).
-- Lỗi: thiếu `url` → `400`; queue đầy (quá 20 job) → `503`.
+- `socketId` (optional): client socket id — the server emits `progress_update` events to that socket. Omit if the client doesn't use sockets.
+- `queued: true` + `position` when the queue is busy (job is waiting in line).
+- Errors: missing `url` → `400`; queue full (over the configured limit) → `503`.
+
+### `GET /download/status?jobId=<job_id>`
+
+Poll a job's current state. Lets a client recover a result when a socket disconnect made it miss the `ready` event (e.g. app backgrounded, dropped connection).
+
+```json
+{ "status": "done", "error": null, "file_url": "/file/abc123_...", "title": "Video title", "position": null }
+```
+
+- `status`: `queued | running | done | error`
+- `file_url` / `title` are present when `status = done`.
+- `404` when the job is unknown or already cleaned up.
 
 ### `GET /file/:jobId`
 
-Tải file MP3 đã convert xong. Trả `Content-Disposition: attachment; filename*=UTF-8''<title>.mp3`.
+Downloads the converted MP3. Returns `Content-Disposition: attachment; filename*=UTF-8''<title>.mp3`.
 
-- Chưa có / đã tải / hết hạn → `404` hoặc `410`.
-- File chỉ tồn tại trong **20 phút** kể từ khi ready; hết hạn sẽ bị xoá.
-- File bị xoá ngay sau khi client tải xong (hoặc ngắt giữa chừng) — mỗi job chỉ tải được 1 lần.
+- Not ready / already downloaded / expired → `404` or `410`.
+- Files live for **20 minutes** after becoming ready; expired files are deleted.
+- The file is removed right after the client downloads it (or disconnects mid-transfer) — each job can be downloaded only once.
 
 ## Socket.IO events
 
-Client connect tới `http://<host>:9999/socket.io` (giao thức Socket.IO v4).
+Clients connect to `http://<host>:9999/socket.io` (Socket.IO v4 protocol).
 
-Server emit event **`progress_update`** về room của socket đã đăng ký trong `/download`:
+The server emits **`progress_update`** to the room of the socket registered in `/download`:
 
 ```json
 {
@@ -91,24 +117,26 @@ Server emit event **`progress_update`** về room của socket đã đăng ký t
   "percent": 0,
   "url": "https://www.youtube.com/watch?v=...",
   "jobId": "abc123_1786358433701_bb5469",
-  "position": 2,          // chỉ khi status = queued
-  "fileUrl": "/file/abc123_...",  // chỉ khi status = ready
-  "title": "Video title",          // chỉ khi status = ready
-  "errorMessage": "..."            // chỉ khi status = error
+  "position": 2,          // only when status = queued
+  "fileUrl": "/file/abc123_...",  // only when status = ready
+  "title": "Video title",          // only when status = ready
+  "errorMessage": "..."            // only when status = error
 }
 ```
 
-Quy trình hoàn chỉnh: `starting` → `fetching_info` (5%) → `downloading_server` (20–70%) → `converting` (75%) → `ready` (95%) → client tải `/file/:jobId` → done. Nếu lỗi: `error` (0%).
+Full pipeline: `starting` → `fetching_info` (5%) → `downloading_server` (20–70%) → `converting` (75%) → `ready` (95%) → client downloads `/file/:jobId` → done. On failure: `error` (0%).
 
-## Hàng đợi (Job queue)
+The socket is the fast, real-time channel; clients can fall back to polling `/download/status` so a missed `ready` event still completes the download.
 
-- **maxConcurrent = 1**: chỉ 1 job chạy cùng lúc (phù hợp plan miễn phí Render), các job sau xếp hàng.
-- **maxQueueLength = 20**: giới hạn tổng job (running + waiting) để chống spam; vượt quá → `503`.
-- Các hằng số này chỉnh ở đầu `main.py`.
+## Job queue
+
+- **maxConcurrent = 1** (default): only 1 job runs at a time (fits Render's free plan), the rest wait in line.
+- **maxQueueLength = 20** (default): total job limit (running + waiting) to prevent spam; going over returns `503`.
+- Both values are read from the remote config at startup — see [Configuration](#configuration).
 
 ## Graceful shutdown
 
-Khi nhận `SIGTERM`: huỷ các job đang chờ, chờ tối đa 30s cho job đang chạy hoàn tất, rồi đóng server (force-exit sau 35s nếu kẹt).
+On `SIGTERM`: cancels waiting jobs, waits up to 30s for running jobs to finish, then closes the server (force-exit after 35s if stuck).
 
 ## Docker
 
@@ -117,10 +145,10 @@ docker build -t ytb-mp3-server .
 docker run -p 9999:9999 ytb-mp3-server
 ```
 
-Image dựng sẵn `ffmpeg`, `yt-dlp[default]`, `deno` (xử lý YouTube n-challenge). Đổi port qua `-e PORT=xxxx` nếu cần.
+The image ships `ffmpeg`, `yt-dlp[default]`, and `deno` (for YouTube n-challenge solving). Change the port with `-e PORT=xxxx` if needed.
 
-## Lưu ý
+## Notes
 
-- **`cookies.txt`**: nếu YouTube chặn, đặt file Netscape-format cookies tại thư mục dự án; server tự nhận diện và dùng (`--cookies`). File này **đã gitignore**, không bao giờ push lên repo.
-- Temp file (`m4a`/`mp3`) nằm trong thư mục temp của hệ điều hành (`/tmp` trên Linux) và được dọn tự động: file ready quá 20 phút, file tải xong, file lỗi.
-- Server chạy đơn luồng asyncio: mọi tác vụ (subprocess, socket, queue) đều async, không cần lock.
+- **`cookies.txt`**: if YouTube blocks requests, drop a Netscape-format cookies file in the project dir; the server detects and uses it (`--cookies`). The file is **gitignored** — never push it.
+- Temp files (`m4a`/`mp3`) live in the OS temp dir (`/tmp` on Linux) and are cleaned automatically: ready files older than 20 minutes, files already downloaded, and files from failed jobs.
+- The server runs on a single asyncio event loop: every task (subprocess, socket, queue) is async, no locks needed.
