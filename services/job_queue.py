@@ -106,19 +106,26 @@ class JobQueue:
         return False
 
     def cancel_all(self):
-        count = 0
+        canceled_ids = []
         for job_id in list(self.job_status.keys()):
             status = self.job_status[job_id]["status"]
             if status in ("queued", "running", "cancelling"):
                 if self.cancel_job(job_id):
-                    count += 1
-        return count
+                    canceled_ids.append(job_id)
+        return canceled_ids
 
     def find_job_id_by_url(self, url):
-        """Tìm job đang chờ/chạy khớp URL (đã chuẩn hoá phía route)."""
+        """Tìm job đang chờ/chạy khớp URL (theo videoId để chịu được format khác nhau)."""
+        from utils.url_util import normalize_youtube_url
         url = (url or "").strip()
+        target = normalize_youtube_url(url)
         for job_id, entry in self.job_status.items():
-            if entry.get("url") == url and entry["status"] in ("queued", "running", "cancelling"):
+            if entry["status"] not in ("queued", "running", "cancelling"):
+                continue
+            entry_url = entry.get("url")
+            if not entry_url:
+                continue
+            if normalize_youtube_url(entry_url.strip()) == target:
                 return job_id
         return None
 

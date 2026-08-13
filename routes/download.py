@@ -32,6 +32,17 @@ def cleanup_expired_files():
 def create_download_router(sio):
     router = APIRouter()
 
+    async def emit_cancelled(job_id: str):
+        """Báo client rằng job đã bị hủy, kèm url để client match task."""
+        queue = get_queue()
+        entry = queue.job_status.get(job_id)
+        job_url = entry.get("url") if entry else None
+        await sio.emit(
+            "progress_update",
+            {"status": "cancelled", "percent": 0, "jobId": job_id, "url": job_url},
+        )
+        print(f"[{job_id}] Emitted cancelled to clients")
+
     @router.get("/download")
     async def download(socket_id: str | None = Query(default=None, alias="socketId"), url: str | None = Query(default=None)):
         if not url:
@@ -100,7 +111,10 @@ def create_download_router(sio):
 
             except asyncio.CancelledError:
                 print(f"[{job_id}] Download cancelled")
-                await send_status("cancelled", 0)
+                try:
+                    await send_status("cancelled", 0)
+                except asyncio.CancelledError:
+                    pass  # task đã bị hủy — event cancelled đã emit trực tiếp ở route
 
                 if tmp_m4a:
                     remove(tmp_m4a)
@@ -158,7 +172,10 @@ def create_download_router(sio):
 
         if all:
             canceled = queue.cancel_all()
-            return {"canceled": canceled}
+            # Báo client cập nhật UI qua socket — không phụ thuộc worker có kịp emit không
+            for jid in canceled:
+                await emit_cancelled(jid)
+            return {"canceled": len(canceled)}
 
         if url:
             # Cancel job theo URL (app chỉ biết url, chưa biết jobId)
@@ -171,6 +188,7 @@ def create_download_router(sio):
         if not ok:
             raise HTTPException(status_code=404, detail="Job not found, already finished, or already cancelled")
 
+        await emit_cancelled(job_id)
         return {"canceled": 1, "jobId": job_id}
 
     @router.get("/file/{job_id}")
