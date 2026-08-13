@@ -25,6 +25,7 @@ def cleanup_expired_files():
             print(f"[{job_id}] Ready file expired, cleaning up")
             remove(entry["path"])
             ready_files.pop(job_id, None)
+            get_queue().remove_job(job_id)
 
 
 def create_download_router(sio):
@@ -93,6 +94,7 @@ def create_download_router(sio):
                     "created_at": time.time() * 1000,
                 }
 
+                queue.mark_done(job_id, f"/file/{job_id}", display_title)
                 await send_status("ready", 95, fileUrl=f"/file/{job_id}", title=display_title)
 
             except Exception as err:
@@ -126,6 +128,19 @@ def create_download_router(sio):
             await send_status("error", 0, errorMessage=str(err))
             raise HTTPException(status_code=503, detail={"error": "Server busy", "message": str(err)})
 
+    @router.get("/download/status")
+    async def download_status(job_id: str = Query(default=None)):
+        if not job_id:
+            raise HTTPException(status_code=400, detail="Missing jobId")
+
+        queue = get_queue()
+        job = queue.get_job_status(job_id)
+
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found or expired")
+
+        return job
+
     @router.get("/file/{job_id}")
     async def get_file(job_id: str):
         entry = ready_files.get(job_id)
@@ -137,11 +152,13 @@ def create_download_router(sio):
 
         if not exists(file_path):
             ready_files.pop(job_id, None)
+            get_queue().remove_job(job_id)
             raise HTTPException(status_code=410, detail="File no longer available")
 
         def cleanup():
             ready_files.pop(job_id, None)
             remove(file_path)
+            get_queue().remove_job(job_id)
 
         print(f"[{job_id}] File delivered to client")
         return FileResponse(

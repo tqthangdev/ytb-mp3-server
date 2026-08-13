@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 
 class QueueFullError(Exception):
@@ -11,6 +12,8 @@ class JobQueue:
         self.max_queue_length = max_queue_length
         self.waiting_jobs = []
         self.running_jobs = {}
+        # job_id -> { status, error, file_url, title, position, created_at }
+        self.job_status = {}
         self.on_status_change = None
 
     def add_job(self, job_id, worker):
@@ -21,12 +24,14 @@ class JobQueue:
             )
 
         job = {"job_id": job_id, "worker": worker}
+        self.job_status[job_id] = {"status": "queued", "error": None, "file_url": None, "title": None, "position": None, "created_at": time.time()}
 
         if len(self.running_jobs) < self.max_concurrent:
             return self._start_job(job)
         else:
             self.waiting_jobs.append(job)
             position = len(self.waiting_jobs)
+            self.job_status[job_id]["position"] = position
 
             if self.on_status_change:
                 self.on_status_change({"job_id": job_id, "status": "queued", "position": position})
@@ -37,6 +42,7 @@ class JobQueue:
         job_id = job["job_id"]
 
         self.running_jobs[job_id] = job
+        self.job_status[job_id]["status"] = "running"
 
         if self.on_status_change:
             self.on_status_change({"job_id": job_id, "status": "started"})
@@ -54,6 +60,8 @@ class JobQueue:
                 self.on_status_change({"job_id": job_id, "status": "done", "error": None})
         except Exception as err:
             print(f"Job {job_id} failed: {err}")
+            self.job_status[job_id]["status"] = "error"
+            self.job_status[job_id]["error"] = str(err)
 
             if self.on_status_change:
                 self.on_status_change({"job_id": job_id, "status": "done", "error": str(err)})
@@ -61,32 +69,30 @@ class JobQueue:
             self.running_jobs.pop(job_id, None)
             self._process_next()
 
-    def _process_next(self):
-        if self.waiting_jobs and len(self.running_jobs) < self.max_concurrent:
-            next_job = self.waiting_jobs.pop(0)
-            self._start_job(next_job)
+    def mark_done(self, job_id, file_url, title):
+        self.job_status[job_id]["status"] = "done"
+        self.job_status[job_id]["file_url"] = file_url
+        self.job_status[job_id]["title"] = title
 
-    def cancel_job(self, job_id):
-        for index, job in enumerate(self.waiting_jobs):
-            if job["job_id"] == job_id:
-                del self.waiting_jobs[index]
-
-                if self.on_status_change:
-                    self.on_status_change({"job_id": job_id, "status": "cancelled"})
-
-                return True
-        return False
-
-    def get_status(self):
+    def get_job_status(self, job_id):
+        entry = self.job_status.get(job_id)
+        if not entry:
+            return None
         return {
-            "running": len(self.running_jobs),
-            "waiting": len(self.waiting_jobs),
-            "max_concurrent": self.max_concurrent,
-            "max_queue_length": self.max_queue_length,
+            "status": entry["status"],
+            "error": entry.get("error"),
+            "file_url": entry.get("file_url"),
+            "title": entry.get("title"),
+            "position": entry.get("position"),
         }
+
+    def remove_job(self, job_id):
+        self.job_status.pop(job_id, None)
 
     def clear_waiting(self):
         count = len(self.waiting_jobs)
+        for job in self.waiting_jobs:
+            self.job_status.pop(job["job_id"], None)
         self.waiting_jobs = []
         return count
 

@@ -10,30 +10,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes.download import cleanup_expired_files, create_download_router
 from services.job_queue import init_queue
+from services.server_config import load_server_config
 
-# ─── Initialize job queue ───────────────────────────────────────────
-# MAX_CONCURRENT: tối đa số job chạy cùng lúc (1-2 cho Render free)
-# MAX_QUEUE_LENGTH: giới hạn tổng job (running + waiting) để tránh spam
-MAX_CONCURRENT = 1
-MAX_QUEUE_LENGTH = 20
-
-queue = init_queue(MAX_CONCURRENT, MAX_QUEUE_LENGTH)
-
-# Setup callback khi job status thay đổi (optional, để debug)
-def on_status_change(data):
-    job_id = data["job_id"]
-    status = data["status"]
-    if status == "queued":
-        print(f"[Queue] Job {job_id} queued at position {data['position']}")
-    elif status == "started":
-        print(f"[Queue] Job {job_id} started. Running: {queue.get_status()['running']}")
-    elif status == "done":
-        msg = f"failed: {data['error']}" if data.get("error") else "completed"
-        print(f"[Queue] Job {job_id} {msg}")
-
-queue.on_status_change = on_status_change
-
-print(f"[Init] Job queue initialized: maxConcurrent={MAX_CONCURRENT}, maxQueue={MAX_QUEUE_LENGTH}")
+# Gán trong lifespan (đọc config từ GitHub Pages trước khi khởi tạo).
+queue = None
 
 # ─── Socket + app setup ─────────────────────────────────────────────
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -56,8 +36,28 @@ async def ready_file_cleanup_loop():
         cleanup_expired_files()
 
 
+# Setup callback khi job status thay đổi (optional, để debug)
+def on_status_change(data):
+    job_id = data["job_id"]
+    status = data["status"]
+    if status == "queued":
+        print(f"[Queue] Job {job_id} queued at position {data['position']}")
+    elif status == "started":
+        print(f"[Queue] Job {job_id} started. Running: {queue.get_status()['running']}")
+    elif status == "done":
+        msg = f"failed: {data['error']}" if data.get("error") else "completed"
+        print(f"[Queue] Job {job_id} {msg}")
+
+
 @asynccontextmanager
 async def lifespan(application):
+    # Đọc config từ GitHub Pages (maxConcurrent/maxQueueLength), fallback mặc định.
+    config = await load_server_config()
+    global queue
+    queue = init_queue(config["maxConcurrent"], config["maxQueueLength"])
+    queue.on_status_change = on_status_change
+    print(f"[Init] Job queue initialized: maxConcurrent={config['maxConcurrent']}, maxQueueLength={config['maxQueueLength']}")
+
     cleanup_task = asyncio.create_task(ready_file_cleanup_loop())
 
     yield
