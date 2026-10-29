@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -14,40 +15,70 @@ COOKIES_PATH = ROOT / "cookies.txt"
 
 DOWNLOAD_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
+# Chỉ lấy stream audio M4A (AAC trong container MP4) đã có sẵn — không chuyển mã.
+AUDIO_M4A_FORMAT = "bestaudio[ext=m4a]"
+M4A_EXTENSION = "m4a"
+M4A_MIME_TYPE = "audio/mp4"
+DIRECT_PROTOCOLS = ("http", "https")
+MISSING_FORMAT_MARKER = "requested format is not available"
+
+
+class AudioLinkUnavailableError(Exception):
+    """Video không có stream audio M4A tải trực tiếp được."""
+
+
+def _base_command():
+    """Lệnh gọi yt-dlp: binary cạnh project (Windows), trong PATH, hoặc module của venv."""
+    if sys.platform == "win32":
+        return [BINARY]
+    if shutil.which(BINARY):
+        return [BINARY]
+    return [sys.executable, "-m", "yt_dlp"]
+
 
 def _cookie_args():
     return ["--cookies", str(COOKIES_PATH)] if COOKIES_PATH.exists() else []
 
 
-async def get_info(url):
-    args = ["--dump-single-json", *_cookie_args(), url]
+async def get_info(url, fmt=None):
+    args = ["--dump-single-json", "--no-playlist", *_cookie_args()]
+    if fmt:
+        args += ["-f", fmt]
+    args.append(url)
 
-    stdout_file = Path(tempfile.gettempdir()) / f"ytdlp_out_{os.getpid()}.json"
-    stderr_file = Path(tempfile.gettempdir()) / f"ytdlp_err_{os.getpid()}.log"
+    stdout_fd, stdout_path = tempfile.mkstemp(prefix="ytdlp_out_", suffix=".json")
+    stderr_fd, stderr_path = tempfile.mkstemp(prefix="ytdlp_err_", suffix=".log")
+    os.close(stdout_fd)
+    os.close(stderr_fd)
+    stdout_file = Path(stdout_path)
+    stderr_file = Path(stderr_path)
 
-    proc = await asyncio.create_subprocess_exec(
-        BINARY,
-        *args,
-        stdout=open(stdout_file, "w"),
-        stderr=open(stderr_file, "w"),
-    )
     try:
-        await proc.wait()
-    except asyncio.CancelledError:
-        proc.terminate()
-        await proc.wait()
-        raise
+        with stdout_file.open("w", encoding="utf-8") as stdout, stderr_file.open(
+            "w", encoding="utf-8"
+        ) as stderr:
+            proc = await asyncio.create_subprocess_exec(
+                BINARY,
+                *args,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            try:
+                await proc.wait()
+            except asyncio.CancelledError:
+                proc.terminate()
+                await proc.wait()
+                raise
 
-    stderr = stderr_file.read_text(errors="replace") if stderr_file.exists() else ""
-    stderr_file.unlink(missing_ok=True)
+        stderr_text = stderr_file.read_text(errors="replace")
+        if proc.returncode != 0:
+            print(stderr_text)
+            raise RuntimeError(stderr_text or f"yt-dlp exited with code {proc.returncode}")
 
-    if proc.returncode != 0:
-        print(stderr)
-        raise RuntimeError(stderr or f"yt-dlp exited with code {proc.returncode}")
-
-    data = json.loads(stdout_file.read_text(encoding="utf-8", errors="replace"))
-    stdout_file.unlink(missing_ok=True)
-    return data
+        return json.loads(stdout_file.read_text(encoding="utf-8", errors="replace"))
+    finally:
+        stdout_file.unlink(missing_ok=True)
+        stderr_file.unlink(missing_ok=True)
 
 
 async def download_audio(url, output, on_progress):
