@@ -28,9 +28,10 @@ ytb-mp3-server/
 ## Requirements
 
 - Python 3.11+
-- `yt-dlp` — either the binary (`yt-dlp.exe` next to the project dir on Windows, or `yt-dlp` in PATH on Linux) or the Python package installed from `requirements.txt`. The server uses the binary when it is in PATH and falls back to `python -m yt_dlp`.
+- `yt-dlp` — either the binary (`yt-dlp.exe` next to the project dir on Windows, or `yt-dlp` in PATH on Linux) or the Python package installed from `requirements.txt` (`yt-dlp[default]`). The server uses the binary when it is in PATH and falls back to `python -m yt_dlp`.
 - `ffmpeg` in PATH — only needed for the MP3 flow (`/download`); `/audio-link` never calls it
-- (Optional) `deno` — only needed for Docker deployments, used for YouTube n-challenge solving
+- `deno` in PATH — the JavaScript runtime yt-dlp uses to solve YouTube's signature/n challenge. Without it YouTube exposes only storyboard images, so `/audio-link` reports "no M4A" for videos that do have one. Required locally, not only in Docker.
+- (Optional) `cookies.txt` in the project root — Netscape-format cookies, used automatically when YouTube demands a signed-in session. Never commit it.
 
 ## Install & run
 
@@ -44,8 +45,19 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 
-# 2. Start the server (default port 9999, override with the PORT env var)
+# 2. Install Deno without root (yt-dlp needs it for YouTube signature solving)
+curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip \
+  -o /tmp/deno.zip && unzip -o /tmp/deno.zip -d "$HOME/.local/bin" && rm /tmp/deno.zip
+deno --version   # phải in ra phiên bản; nhớ để ~/.local/bin trong PATH
+
+# 3. Start the server (default port 9999, override with the PORT env var)
 python main.py
+```
+
+Sanity check that yt-dlp can see real formats (not only storyboards):
+
+```bash
+yt-dlp --cookies cookies.txt --no-playlist -F 'https://youtu.be/<videoId>' | grep 'audio only'
 ```
 
 Check the server is alive:
