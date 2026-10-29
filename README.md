@@ -2,21 +2,24 @@
 
 YouTube-to-MP3 conversion server built with **Python (FastAPI + python-socketio)**. It accepts download requests from clients (React Native app / web), pulls the audio with `yt-dlp`, converts it to MP3 with `ffmpeg`, streams real-time progress over Socket.IO, and serves the resulting file for the client to download.
 
+It also exposes a lightweight **link-only** endpoint (`POST /audio-link`) that returns the direct URL of an already-available M4A audio stream. That path does **not** download the stream, does **not** run `ffmpeg` and does **not** serve the file — the client fetches it directly, which keeps CPU, temp disk and egress on the server near zero.
+
 ## Architecture
 
 ```
 ytb-mp3-server/
 ├── main.py                  # Entry point: FastAPI app + Socket.IO server + queue init + graceful shutdown
 ├── routes/
-│   └── download.py          # GET /download (queue job), GET /download/status, GET /file/:jobId (serve mp3)
+│   ├── download.py          # GET /download (queue job), GET /download/status, GET /file/:jobId (serve mp3)
+│   └── audio_link.py        # POST /audio-link — trả URL audio M4A có sẵn (không tải, không ffmpeg)
 ├── services/
 │   ├── job_queue.py         # Job queue (bounded concurrency + total job limit) + per-job status tracking
 │   ├── server_config.py     # Loads queue limits from remote config (GitHub Pages), fallback to defaults
-│   ├── ytdlp.py             # Wraps yt-dlp: fetch metadata + download audio (subprocess)
+│   ├── ytdlp.py             # Wraps yt-dlp: metadata, audio download (subprocess) and M4A link lookup
 │   ├── ffmpeg.py            # Convert m4a → mp3 (subprocess)
 │   └── file_service.py      # File utilities: sanitize names, temp files, delete, size
 ├── utils/
-│   └── url_util.py          # Normalizes YouTube URLs (youtu.be/... → watch?v=...)
+│   └── url_util.py          # Normalizes YouTube URLs (youtu.be/… → watch?v=…) + extracts the video id
 ├── requirements.txt
 ├── Dockerfile
 └── cookies.txt              # (optional) YouTube cookies — NEVER commit to git
@@ -25,8 +28,8 @@ ytb-mp3-server/
 ## Requirements
 
 - Python 3.11+
-- `yt-dlp` binary (`yt-dlp.exe` next to the project dir on Windows, or `yt-dlp` in PATH on Linux)
-- `ffmpeg` in PATH
+- `yt-dlp` — either the binary (`yt-dlp.exe` next to the project dir on Windows, or `yt-dlp` in PATH on Linux) or the Python package installed from `requirements.txt`. The server uses the binary when it is in PATH and falls back to `python -m yt_dlp`.
+- `ffmpeg` in PATH — only needed for the MP3 flow (`/download`); `/audio-link` never calls it
 - (Optional) `deno` — only needed for Docker deployments, used for YouTube n-challenge solving
 
 ## Install & run
@@ -72,6 +75,31 @@ Queue limits are loaded from a remote config file (GitHub Pages) at startup — 
 ### `GET /health`
 
 Server status + queue info.
+
+### `POST /audio-link`
+
+Returns the direct URL of an M4A audio stream that is already available, so the client can download it itself. No queue, no download, no conversion, no file on the server.
+
+```bash
+curl -s http://127.0.0.1:9999/audio-link -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.youtube.com/watch?v=<videoId>"}'
+```
+
+```json
+{
+  "url": "https://…googlevideo.com/videoplayback?…",
+  "title": "Video title",
+  "extension": "m4a",
+  "mimeType": "audio/mp4",
+  "filesize": 3449447
+}
+```
+
+- Accepts `watch?v=`, `youtu.be/`, `/shorts/`, `/embed/` and `/live/` links (or a bare 11-character video id).
+- Picks `bestaudio[ext=m4a]` with `yt-dlp` and refuses to fall back to conversion. If the format is unavailable, or the selected format is not a plain HTTP stream (e.g. an HLS manifest), the request fails instead of transcoding.
+- Errors: malformed/non-YouTube URL → `400`; video unavailable, private or with no M4A stream → `422`; unexpected `yt-dlp` failure → `502`.
+- The returned URL is signed and time-limited (typically a few hours for the requesting session) and is **never written to the log** — only the video id is logged.
 
 ### `GET /download?socketId=<socket_id>&url=<youtube_url>`
 

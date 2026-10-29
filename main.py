@@ -8,6 +8,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from routes.audio_link import create_audio_link_router
 from routes.download import cleanup_expired_files, create_download_router
 from services.job_queue import init_queue
 from services.server_config import load_server_config
@@ -93,6 +94,7 @@ async def disconnect(sid):
 
 # ─── Routes ─────────────────────────────────────────────────────────
 app.include_router(create_download_router(sio))
+app.include_router(create_audio_link_router())
 
 
 # ─── Health check endpoint ──────────────────────────────────────────
