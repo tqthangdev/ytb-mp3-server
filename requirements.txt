@@ -1,4 +1,4 @@
 fastapi
 uvicorn[standard]
 python-socketio
-yt-dlp
+yt-dlp[default]
