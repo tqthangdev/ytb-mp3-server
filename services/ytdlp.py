@@ -15,6 +15,9 @@ COOKIES_PATH = ROOT / "cookies.txt"
 # PaaS không cho commit cookies.txt; trỏ tới file bí mật (Render Secret Files
 # mount ở /etc/secrets/) qua biến môi trường này.
 COOKIES_FILE_ENV = "YTDLP_COOKIES_FILE"
+# IP datacenter (Render, Fly, ...) hay bị YouTube trả 429/403 nên không trích xuất
+# được. Đặt proxy cho RIÊNG bước trích xuất; file audio vẫn tải trực tiếp về client.
+PROXY_ENV = "YTDLP_PROXY"
 
 # Điền một lần lúc khởi động (probe_diagnostics) để /health không phải spawn tiến trình.
 _diagnostics = None
@@ -66,6 +69,12 @@ def _cookie_args():
     return ["--cookies", path] if path else []
 
 
+def _proxy_args():
+    """Proxy chỉ cho bước trích xuất — không đụng tới luồng tải file."""
+    proxy = (os.environ.get(PROXY_ENV) or "").strip()
+    return ["--proxy", proxy] if proxy else []
+
+
 async def probe_diagnostics():
     """Chạy một lần lúc khởi động để /health báo được môi trường thật của máy chủ."""
     global _diagnostics
@@ -90,10 +99,11 @@ async def probe_diagnostics():
         "ytdlp": version,
         "deno": shutil.which("deno") is not None,
         "cookies": cookies_path() is not None,
+        "proxy": bool((os.environ.get(PROXY_ENV) or "").strip()),
     }
     print(
         f"[Init] yt-dlp={version} deno={_diagnostics['deno']} "
-        f"cookies={_diagnostics['cookies']}"
+        f"cookies={_diagnostics['cookies']} proxy={_diagnostics['proxy']}"
     )
     return _diagnostics
 
@@ -105,11 +115,12 @@ def diagnostics():
         "ytdlp": None,
         "deno": shutil.which("deno") is not None,
         "cookies": cookies_path() is not None,
+        "proxy": bool((os.environ.get(PROXY_ENV) or "").strip()),
     }
 
 
 async def get_info(url, fmt=None):
-    args = ["--dump-single-json", "--no-playlist", *_cookie_args()]
+    args = ["--dump-single-json", "--no-playlist", *_cookie_args(), *_proxy_args()]
     if fmt:
         args += ["-f", fmt]
     args.append(url)

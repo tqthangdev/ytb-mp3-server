@@ -189,6 +189,7 @@ The image ships `ffmpeg`, `yt-dlp[default]`, and `deno` (for YouTube n-challenge
 
 ## Notes
 
-- **`cookies.txt`**: if YouTube blocks requests, drop a Netscape-format cookies file in the project dir; the server detects and uses it (`--cookies`). The file is **gitignored** — never push it.
+- **`cookies.txt`**: if YouTube blocks requests, drop a Netscape-format cookies file in the project dir; the server detects and uses it (`--cookies`). On a PaaS, point `YTDLP_COOKIES_FILE` at a secret file instead (Render mounts those under `/etc/secrets/`). The file is **gitignored** — never push it.
+- **Extraction blocked on datacenter IPs**: hosts like Render, Fly or Railway get `HTTP 429` / `HTTP 403` from YouTube, which yt-dlp reports as `Failed to extract any player response` — no amount of updating, Deno or cookies gets around it, because the IP itself is refused. Set `YTDLP_PROXY` to route **only the extraction step** through a proxy (usually a residential/rotating one); the audio still travels straight from YouTube to the client, so server egress stays tiny. `GET /health` reports `ytdlp`, `deno`, `cookies` and `proxy`, so the live environment is verifiable without reading logs.
 - Temp files (`m4a`/`mp3`) live in the OS temp dir (`/tmp` on Linux) and are cleaned automatically: ready files older than 20 minutes, files already downloaded, and files from failed jobs.
 - The server runs on a single asyncio event loop: every task (subprocess, socket, queue) is async, no locks needed.
