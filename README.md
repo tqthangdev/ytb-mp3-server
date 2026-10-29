@@ -110,7 +110,7 @@ curl -s http://127.0.0.1:9999/audio-link -X POST \
 
 - Accepts `watch?v=`, `youtu.be/`, `/shorts/`, `/embed/` and `/live/` links (or a bare 11-character video id).
 - Picks `bestaudio[ext=m4a]` with `yt-dlp` and refuses to fall back to conversion. If the format is unavailable, or the selected format is not a plain HTTP stream (e.g. an HLS manifest), the request fails instead of transcoding.
-- Errors: malformed/non-YouTube URL → `400`; video unavailable, private or with no M4A stream → `422`; unexpected `yt-dlp` failure → `502`.
+- Errors: malformed/non-YouTube URL — or more than one link in the same string, e.g. two links pasted without a separator — → `400`; video unavailable, private or with no M4A stream → `422`; unexpected `yt-dlp` failure → `502`.
 - The returned URL is signed and time-limited (typically a few hours for the requesting session) and is **never written to the log** — only the video id is logged.
 
 ### `GET /download?socketId=<socket_id>&url=<youtube_url>`

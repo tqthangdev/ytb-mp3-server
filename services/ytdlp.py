@@ -12,6 +12,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 BINARY = str(ROOT / "yt-dlp.exe") if sys.platform == "win32" else "yt-dlp"
 COOKIES_PATH = ROOT / "cookies.txt"
+# PaaS không cho commit cookies.txt; trỏ tới file bí mật (Render Secret Files
+# mount ở /etc/secrets/) qua biến môi trường này.
+COOKIES_FILE_ENV = "YTDLP_COOKIES_FILE"
+
+# Điền một lần lúc khởi động (probe_diagnostics) để /health không phải spawn tiến trình.
+_diagnostics = None
 
 DOWNLOAD_PROGRESS_RE = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 
@@ -47,8 +53,59 @@ def _base_command():
     return [sys.executable, "-m", "yt_dlp"]
 
 
+def cookies_path():
+    """File cookies đang dùng, hoặc None nếu không có."""
+    explicit = (os.environ.get(COOKIES_FILE_ENV) or "").strip()
+    if explicit and Path(explicit).exists():
+        return explicit
+    return str(COOKIES_PATH) if COOKIES_PATH.exists() else None
+
+
 def _cookie_args():
-    return ["--cookies", str(COOKIES_PATH)] if COOKIES_PATH.exists() else []
+    path = cookies_path()
+    return ["--cookies", path] if path else []
+
+
+async def probe_diagnostics():
+    """Chạy một lần lúc khởi động để /health báo được môi trường thật của máy chủ."""
+    global _diagnostics
+    if _diagnostics is not None:
+        return _diagnostics
+
+    version = None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *_base_command(),
+            "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode == 0:
+            version = stdout.decode(errors="replace").strip()
+    except Exception as err:
+        print(f"[Init] Không đọc được phiên bản yt-dlp: {type(err).__name__}")
+
+    _diagnostics = {
+        "ytdlp": version,
+        "deno": shutil.which("deno") is not None,
+        "cookies": cookies_path() is not None,
+    }
+    print(
+        f"[Init] yt-dlp={version} deno={_diagnostics['deno']} "
+        f"cookies={_diagnostics['cookies']}"
+    )
+    return _diagnostics
+
+
+def diagnostics():
+    if _diagnostics is not None:
+        return _diagnostics
+    return {
+        "ytdlp": None,
+        "deno": shutil.which("deno") is not None,
+        "cookies": cookies_path() is not None,
+    }
 
 
 async def get_info(url, fmt=None):

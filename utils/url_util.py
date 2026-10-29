@@ -2,6 +2,7 @@ import re
 from urllib.parse import parse_qs, urlparse
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+SCHEME_RE = re.compile(r"https?://", re.IGNORECASE)
 
 YOUTUBE_HOSTS = {
     "youtube.com",
@@ -24,10 +25,21 @@ def _valid_video_id(value):
     return value if VIDEO_ID_RE.match(value) else None
 
 
+def has_multiple_links(url):
+    """True khi chuỗi chứa nhiều hơn một liên kết — thường do dán lặp hai link.
+
+    Link dán chồng sẽ nằm trong query string của link đầu (ví dụ tham số `si=`),
+    nên nếu không chặn thì link thứ hai bị bỏ qua trong im lặng.
+    """
+    return len(SCHEME_RE.findall(url or "")) > 1
+
+
 def extract_video_id(url):
     """Lấy videoId từ URL YouTube (watch, youtu.be, shorts, embed, live) hoặc id trần."""
     url = (url or "").strip()
     if not url:
+        return None
+    if has_multiple_links(url):
         return None
     if VIDEO_ID_RE.match(url):
         return url

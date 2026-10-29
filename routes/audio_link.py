@@ -4,7 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services.ytdlp import AudioLinkUnavailableError, get_audio_link
-from utils.url_util import extract_video_id, normalize_youtube_url
+from utils.url_util import extract_video_id, has_multiple_links, normalize_youtube_url
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,9 @@ def create_audio_link_router():
         Server không tải stream về, không chạy ffmpeg và không phục vụ file.
         Không log URL đã ký trong phản hồi — chỉ log video id.
         """
+        if has_multiple_links(payload.url):
+            raise HTTPException(status_code=400, detail="Chỉ nhận một liên kết YouTube.")
+
         video_id = extract_video_id(payload.url)
         if not video_id:
             raise HTTPException(status_code=400, detail="Liên kết YouTube không hợp lệ.")

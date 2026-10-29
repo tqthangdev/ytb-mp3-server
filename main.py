@@ -12,6 +12,7 @@ from routes.audio_link import create_audio_link_router
 from routes.download import cleanup_expired_files, create_download_router
 from services.job_queue import init_queue
 from services.server_config import load_server_config
+from services.ytdlp import diagnostics, probe_diagnostics
 
 # Gán trong lifespan (đọc config từ GitHub Pages trước khi khởi tạo).
 queue = None
@@ -61,6 +62,9 @@ async def lifespan(application):
     queue.on_status_change = on_status_change
     print(f"[Init] Job queue initialized: maxConcurrent={config['maxConcurrent']}, maxQueueLength={config['maxQueueLength']}")
 
+    # Ghi lại phiên bản yt-dlp / deno / cookies để /health phản ánh đúng môi trường.
+    await probe_diagnostics()
+
     cleanup_task = asyncio.create_task(ready_file_cleanup_loop())
 
     yield
@@ -103,6 +107,7 @@ async def health():
     return {
         "status": "ok",
         "queue": queue.get_status(),
+        "extractor": diagnostics(),
         "timestamp": datetime.now().isoformat(),
     }
 
