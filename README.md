@@ -82,6 +82,32 @@ Queue limits are loaded from a remote config file (GitHub Pages) at startup — 
 - If the remote config is unreachable or the values are missing/invalid, the server falls back to `maxConcurrent = 1` and `maxQueueLength = 20` and keeps running.
 - Changing the remote config takes effect on the next deploy/restart — no code change needed.
 
+## Tor proxy
+
+Hosts like Render, Fly or Railway hand out datacenter IPs, and YouTube refuses them (`HTTP 429` / `HTTP 403` → yt-dlp: `Failed to extract any player response`). No extractor update, Deno or cookies gets around it, because the **IP itself** is the blocker.
+
+The image ships `tor` and the container entrypoint (`docker-entrypoint.sh`) boots it before the app: it starts a local Tor SOCKS proxy, waits for bootstrap, then exports `YTDLP_PROXY=socks5h://127.0.0.1:9050` and runs the server. Everything works on Render with no extra setup.
+
+The proxy applies to **both** the extraction step and the download step. That is deliberate: the `m4a` URL yt-dlp returns is bound to the IP that extracted it (the `ip=` parameter of `videoplayback`), so downloading from a different IP returns `403`. One unisolated `SocksPort` keeps a single circuit for `youtube.com` and `googlevideo.com`, so both steps share the same exit IP.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TOR_ENABLED` | `true` | Set to `false` to skip Tor entirely. |
+| `TOR_SOCKS_PORT` | `9050` | Local SOCKS port Tor listens on. |
+| `TOR_BOOTSTRAP_TIMEOUT` | `60` | Seconds to wait for Tor to bootstrap before starting the app anyway. |
+| `YTDLP_PROXY` | *(unset)* | Set it to use an **external** proxy (residential/paid) instead of Tor; the entrypoint then skips Tor. |
+
+If Tor fails to bootstrap, the container still starts the app without a proxy (the deploy does not crash) and logs a warning.
+
+### Limitations — read this
+
+- **Tor may still fail.** Tor exit nodes are shared, heavily-flagged IPs, exactly the kind of traffic YouTube challenges hardest (`Sign in to confirm you're not a bot`). Tor is not a guarantee; if it does not work, point `YTDLP_PROXY` at a residential proxy instead.
+- **`/audio-link` is disabled while a proxy is active** and returns `503`. The link is signed for the proxy's IP, so a client on a different IP would get `403`. Use `GET /download` instead.
+- **Slow boot.** Waiting for bootstrap delays the app binding its port; on a platform with an aggressive health check, lower `TOR_BOOTSTRAP_TIMEOUT`.
+- **Circuits can rotate.** If Tor rebuilds its circuit between extraction and download, the exit IP changes and the download can `403`. `MaxCircuitDirtiness 600` in the generated `torrc` reduces how often that happens.
+
+`GET /health` reports `ytdlp`, `deno`, `cookies` and `proxy`, so the live environment is verifiable without reading logs.
+
 ## API
 
 ### `GET /health`
@@ -110,7 +136,7 @@ curl -s http://127.0.0.1:9999/audio-link -X POST \
 
 - Accepts `watch?v=`, `youtu.be/`, `/shorts/`, `/embed/` and `/live/` links (or a bare 11-character video id).
 - Picks `bestaudio[ext=m4a]` with `yt-dlp` and refuses to fall back to conversion. If the format is unavailable, or the selected format is not a plain HTTP stream (e.g. an HLS manifest), the request fails instead of transcoding.
-- Errors: malformed/non-YouTube URL — or more than one link in the same string, e.g. two links pasted without a separator — → `400`; video unavailable, private or with no M4A stream → `422`; unexpected `yt-dlp` failure → `502`.
+- Errors: malformed/non-YouTube URL — or more than one link in the same string, e.g. two links pasted without a separator — → `400`; video unavailable, private or with no M4A stream → `422`; unexpected `yt-dlp` failure → `502`; a proxy is configured (see [Tor proxy](#tor-proxy)) → `503`, because the returned link is bound to the proxy's IP and would 403 on the client.
 - The returned URL is signed and time-limited (typically a few hours for the requesting session) and is **never written to the log** — only the video id is logged.
 
 ### `GET /download?socketId=<socket_id>&url=<youtube_url>`
@@ -185,11 +211,11 @@ docker build -t ytb-mp3-server .
 docker run -p 9999:9999 ytb-mp3-server
 ```
 
-The image ships `ffmpeg`, `yt-dlp[default]`, and `deno` (for YouTube n-challenge solving). Change the port with `-e PORT=xxxx` if needed.
+The image ships `ffmpeg`, `yt-dlp[default]`, `deno` (for YouTube n-challenge solving) and `tor` (local SOCKS proxy). The container starts `docker-entrypoint.sh`, which boots Tor, points `YTDLP_PROXY` at it and then runs the server — see [Tor proxy](#tor-proxy). Change the port with `-e PORT=xxxx` if needed.
 
 ## Notes
 
 - **`cookies.txt`**: if YouTube blocks requests, drop a Netscape-format cookies file in the project dir; the server detects and uses it (`--cookies`). On a PaaS, point `YTDLP_COOKIES_FILE` at a secret file instead (Render mounts those under `/etc/secrets/`). The file is **gitignored** — never push it.
-- **Extraction blocked on datacenter IPs**: hosts like Render, Fly or Railway get `HTTP 429` / `HTTP 403` from YouTube, which yt-dlp reports as `Failed to extract any player response` — no amount of updating, Deno or cookies gets around it, because the IP itself is refused. Set `YTDLP_PROXY` to route **only the extraction step** through a proxy (usually a residential/rotating one); the audio still travels straight from YouTube to the client, so server egress stays tiny. `GET /health` reports `ytdlp`, `deno`, `cookies` and `proxy`, so the live environment is verifiable without reading logs.
+- **Extraction blocked on datacenter IPs**: hosts like Render, Fly or Railway get `HTTP 429` / `HTTP 403` from YouTube, which yt-dlp reports as `Failed to extract any player response` — no amount of updating, Deno or cookies gets around it, because the IP itself is refused. The container runs Tor and routes both extraction and download through it — see [Tor proxy](#tor-proxy).
 - Temp files (`m4a`/`mp3`) live in the OS temp dir (`/tmp` on Linux) and are cleaned automatically: ready files older than 20 minutes, files already downloaded, and files from failed jobs.
 - The server runs on a single asyncio event loop: every task (subprocess, socket, queue) is async, no locks needed.

@@ -69,8 +69,17 @@ def _cookie_args():
     return ["--cookies", path] if path else []
 
 
+def proxy_configured():
+    """True khi có proxy được cấu hình (Tor nội bộ hoặc proxy ngoài)."""
+    return bool((os.environ.get(PROXY_ENV) or "").strip())
+
+
 def _proxy_args():
-    """Proxy chỉ cho bước trích xuất — không đụng tới luồng tải file."""
+    """Proxy cho cả bước trích xuất lẫn bước tải file.
+
+    URL m4a yt-dlp trả về bị ràng buộc theo IP đã trích xuất (tham số ip= trong
+    videoplayback), nên bước tải phải đi cùng proxy để khớp IP, tránh 403.
+    """
     proxy = (os.environ.get(PROXY_ENV) or "").strip()
     return ["--proxy", proxy] if proxy else []
 
@@ -99,7 +108,7 @@ async def probe_diagnostics():
         "ytdlp": version,
         "deno": shutil.which("deno") is not None,
         "cookies": cookies_path() is not None,
-        "proxy": bool((os.environ.get(PROXY_ENV) or "").strip()),
+        "proxy": proxy_configured(),
     }
     print(
         f"[Init] yt-dlp={version} deno={_diagnostics['deno']} "
@@ -115,7 +124,7 @@ def diagnostics():
         "ytdlp": None,
         "deno": shutil.which("deno") is not None,
         "cookies": cookies_path() is not None,
-        "proxy": bool((os.environ.get(PROXY_ENV) or "").strip()),
+        "proxy": proxy_configured(),
     }
 
 
@@ -176,6 +185,7 @@ async def download_audio(url, output, on_progress):
         "-o",
         output,
         *_cookie_args(),
+        *_proxy_args(),
     ]
 
     proc = await asyncio.create_subprocess_exec(

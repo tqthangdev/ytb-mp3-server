@@ -1,9 +1,10 @@
 # 1. Use Debian-based Python image
 FROM python:3.12-slim
 
-# 2. Install system dependencies and ffmpeg
+# 2. Install system dependencies, ffmpeg and tor (local SOCKS proxy to escape
+#    YouTube's datacenter-IP block)
 RUN apt-get update && apt-get install -y \
-    ffmpeg curl unzip && \
+    ffmpeg curl unzip tor && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -33,8 +34,12 @@ RUN pip install --no-cache-dir --upgrade "yt-dlp[default]" && \
     yt-dlp --version && deno --version && \
     yt-dlp --list-extractors > /dev/null
 
-# 8. Expose application port
+# 8. Install the entrypoint that boots Tor before the app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# 9. Expose application port
 EXPOSE 9999
 
-# 9. Start application
-CMD ["python", "main.py"]
+# 10. Start application (boots Tor, sets YTDLP_PROXY, then runs the server)
+CMD ["/usr/local/bin/docker-entrypoint.sh"]
